@@ -1,0 +1,182 @@
+<iscontent type="text/html" charset="UTF-8" compact="true" />
+
+<isinclude template="/components/modules" sf-toolkit="off" />
+
+<iscomment>
+    Bridge PoC — Angular Elements + Shadow DOM + CustomEvent
+    =========================================================
+    Minimal SFCC shell page that proves:
+      1. Angular runs inside Shadow DOM (style/DOM isolation)
+      2. CustomEvents cross the shadow boundary (composed: true)
+      3. Host bridge translates events into SFCC cart operations
+      4. jQuery triggers sync the storefront chrome (minicart, badge)
+      5. Bundles load from CDN, not cartridge static assets
+      6. Zero Zone.js — SFRA jQuery is unaffected
+
+    No App dependencies. One button, one product, full lifecycle.
+</iscomment>
+
+<isdecorate template="common/layout/page">
+
+    <isscript>
+        var URLUtils = require('dw/web/URLUtils');
+
+        // ------------------------------------------------------------------
+        // CDN configuration — from Site Preferences
+        // ------------------------------------------------------------------
+        // Stub URLs for the PoC. Replace with actual CloudFront distribution.
+        //
+        //   Production:  https://d1234567890.cloudfront.net/bridge-poc/0.0.1
+        //   Sandbox:     https://d0987654321.cloudfront.net/bridge-poc/0.0.1
+        //
+        // The version segment ensures immutable caching per build.
+        // ------------------------------------------------------------------
+        var cdnBase = dw.system.Site.current.getCustomPreferenceValue('bridgePocCdnBase')
+                      || 'https://cdn.acme.com/bridge-poc';
+        var version = dw.system.Site.current.getCustomPreferenceValue('bridgePocVersion')
+                      || '0.0.1';
+        var cdnPath = cdnBase + '/' + version;
+
+        // Angular bundle filenames — either read from asset-manifest.json
+        // at deploy time, or hardcoded for the PoC.
+        var mainJs      = cdnPath + '/main.js';
+        var polyfillsJs = cdnPath + '/polyfills.js';
+
+        // Bridge controller URL — server-generated, never hardcoded.
+        // For the PoC, this points to Cart-AddProduct (standard SFRA route).
+        var addToCartUrl = URLUtils.url('Cart-AddProduct').toString();
+    </isscript>
+
+    <iscomment>Preload hints — start fetching Angular bundles early</iscomment>
+    <link rel="modulepreload" href="${mainJs}" />
+    <link rel="modulepreload" href="${polyfillsJs}" />
+
+    <iscomment>Controller URL for the bridge script</iscomment>
+    <meta name="ds-add-to-cart-url" content="${addToCartUrl}" />
+
+    <iscomment>
+        =========================================================
+        Custom Element
+        =========================================================
+        data-sfcc-bridge signals to the Angular SfccBridgeService
+        that it's running inside an SFCC host (not standalone).
+
+        Light DOM children (skeleton) render until Angular upgrades
+        the element and attaches the shadow root.
+    </iscomment>
+    <div id="bridge-poc-container">
+        <acme-bridge-poc data-sfcc-bridge>
+            <iscomment>Skeleton — replaced when shadow root attaches</iscomment>
+            <div style="display:flex;align-items:center;justify-content:center;min-height:300px;font-family:system-ui;color:${"#"}999;">
+                <div style="text-align:center;">
+                    <div style="width:36px;height:36px;margin:0 auto 0.75rem;border:3px solid ${"#"}e0e0e0;border-top-color:${"#"}00c08b;border-radius:50%;animation:poc-spin 0.8s linear infinite;"></div>
+                    <p style="margin:0;font-size:0.9rem;">Loading Bridge PoC&hellip;</p>
+                </div>
+            </div>
+            <style>
+                @keyframes poc-spin {
+                    to { transform: rotate(360deg); }
+                }
+            </style>
+        </acme-bridge-poc>
+    </div>
+
+    <iscomment>
+        =========================================================
+        Host Bridge Listener
+        =========================================================
+        Attached to the custom element (not document).
+        Translates CustomEvents into SFCC cart operations.
+        Uses fetch() for HTTP, jQuery for storefront sync.
+    </iscomment>
+    <script>
+        (function () {
+            'use strict';
+
+            var el = document.querySelector('acme-bridge-poc');
+            if (!el) return;
+
+            var addToCartUrl = (function () {
+                var tag = document.querySelector('meta[name="ds-add-to-cart-url"]');
+                return tag ? tag.getAttribute('content') : '';
+            })();
+
+            // CSRF token lookup — adjust selector to match your SFRA setup
+            function getCsrfToken() {
+                var tokenEl = document.querySelector(
+                    'input[name="csrf_token"], meta[name="csrf-token"]'
+                );
+                return tokenEl
+                    ? (tokenEl.value || tokenEl.getAttribute('content'))
+                    : '';
+            }
+
+            // ---- ds:add-to-cart ----
+            el.addEventListener('ds:add-to-cart', function (e) {
+                var detail = e.detail || {};
+                var pid = detail.pid;
+                var qty = detail.quantity || 1;
+                if (!pid || !addToCartUrl) return;
+
+                // SFCC Cart-AddProduct expects form-encoded data (gotcha #8)
+                var formData = new FormData();
+                formData.append('pid', pid);
+                formData.append('quantity', String(qty));
+
+                var csrfToken = getCsrfToken();
+                if (csrfToken) formData.append('csrf_token', csrfToken);
+
+                fetch(addToCartUrl, {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'same-origin'
+                })
+                .then(function (res) { return res.json(); })
+                .then(function (data) {
+                    // Respond to Angular
+                    el.dispatchEvent(new CustomEvent('ds:cart-response', {
+                        detail: {
+                            success: !data.error,
+                            message: data.message || null,
+                            basket: {
+                                itemCount: data.quantityTotal || 0,
+                                total: data.cart && data.cart.totals
+                                       ? data.cart.totals.grandTotal
+                                       : 0,
+                                currency: 'USD'
+                            }
+                        }
+                    }));
+
+                    // Sync storefront chrome — non-negotiable jQuery triggers
+                    if (window.jQuery) {
+                        window.jQuery('body').trigger('product:afterAddToCart', data);
+                        window.jQuery('.minicart').trigger('count:update', data);
+                    }
+                })
+                .catch(function (err) {
+                    el.dispatchEvent(new CustomEvent('ds:cart-response', {
+                        detail: {
+                            success: false,
+                            error: true,
+                            message: err.message || 'Network error'
+                        }
+                    }));
+                });
+            });
+
+            // ---- ds:resize ----
+            el.addEventListener('ds:resize', function (e) {
+                var height = e.detail && e.detail.height;
+                if (height && typeof height === 'number') {
+                    el.style.height = height + 'px';
+                }
+            });
+        })();
+    </script>
+
+    <iscomment>Angular bundles from CDN — ESM modules</iscomment>
+    <script type="module" src="${polyfillsJs}"></script>
+    <script type="module" src="${mainJs}"></script>
+
+</isdecorate>
