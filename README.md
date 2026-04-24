@@ -218,12 +218,11 @@ This PoC proves or disproves the following claims from the architecture document
 | Claim | How to verify |
 |-------|---------------|
 | Shadow DOM isolates CSS | Add a conflicting `.poc-card { background: red }` to SFRA's global CSS. Angular's card should remain white. |
-| Shadow DOM isolates DOM | Run `document.querySelector('.poc-card')` in the console. It should return `null` (element is behind shadow root). |
+| Shadow DOM isolates DOM | Run `document.querySelector('.poc-card')` in the console — it should return `null` (element is behind shadow root). |
 | Zoneless Angular doesn't break jQuery | Open any PDP on the same site, add to cart, confirm minicart still works. Zone.js is not loaded globally. |
-| Shadow-root fetch reaches SFRA | Watch the Network tab — the `Cart-AddProduct` POST is initiated by the Angular bundle and carries the `dwsid` cookie. |
-| CDN bundles cache independently | Deploy Angular v0.0.2, update Site Preference. Old pages still serve v0.0.1 from edge until cache expires or is invalidated. |
-| SFCC session cookies attach automatically | Inspect the `Cart-AddProduct` request in Network tab — `dwsid` and `dwsecuretoken_*` cookies should be present with no explicit credential handling. |
-| CustomEvent bridge still works (for non-cart flows) | Call `this.bridge.resize(500)` from the browser console with the component selected; confirm a `ds:resize` event fires on the host element. |
+| Shadow-root fetch reaches SFRA with session cookie | In the Network tab, confirm the `Cart-AddProduct` POST is initiated by the Angular bundle and carries `dwsid` (and `dwsecuretoken_*`) automatically — no explicit credential handling in the component. |
+| CDN bundles cache independently per version | Bump `version` in `package.json`, redeploy, update the `bridgePocVersion` Site Preference. Old pages keep serving the prior version from the edge until its cache expires or is invalidated. |
+| CustomEvent bridge helpers exist for host-driven flows | Inspect [main.ts](main.ts) — `SfccBridgeService.resize`, `projectSaved`, and `resolveProject` dispatch `composed: true` CustomEvents on the host element. Not wired to any UI in this PoC; wired for the full App integration. |
 
 ## Graduating to Production
 
