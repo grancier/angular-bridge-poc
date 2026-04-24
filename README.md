@@ -14,17 +14,27 @@ Minimal proof-of-concept that validates the Angular Elements architecture for em
 ## Project Structure
 
 ```
-poc/
-├── angular/                    # Angular Elements application
-│   ├── main.ts                 # Single-file app: component + bridge service + bootstrap
-│   ├── angular.json            # CLI config: ESM output, hashed filenames, no index.html
-│   ├── tsconfig.json           # TS config: ES2022, strict, bundler resolution
-│   ├── package.json            # Dependencies, build scripts, deploy scripts
-│   └── scripts/
-│       └── prepare-cdn.mjs     # Post-build: generates asset-manifest.json
+angular-bridge-poc/
+├── main.ts                     # Single-file Angular app: component + bridge service + bootstrap
+├── index.html                  # Local test page (template; renders to .rendered/index.html)
+├── bridgepoc.isml              # SFCC cartridge template: custom element + bridge listener
 │
-└── sfcc/                       # SFCC cartridge template
-    └── bridgepoc.isml          # Shell page: custom element + bridge listener
+├── angular.json                # CLI config: ESM output, hashed filenames, no index.html
+├── tsconfig.json               # TS config: ES2022, strict, bundler resolution
+├── package.json                # Dependencies + build/deploy/render scripts
+│
+├── env-example                 # Template env file — copy to .env and fill in
+│
+├── bucket-policy.json          # S3 bucket policy (uses ${VAR} placeholders)
+├── cf-distro-config.json       # CloudFront distribution config (uses ${VAR} placeholders)
+├── cors-config.json            # S3 CORS rules (uses ${VAR} placeholders)
+│
+├── scripts/
+│   ├── prepare-cdn.mjs         # Post-build: writes asset-manifest.json
+│   └── render-config.mjs       # Substitutes ${VAR} / ${VAR[]} / ${BUNDLE_MAIN} → .rendered/
+│
+├── .rendered/                  # Render output (gitignored) — concrete files for AWS CLI / npx serve
+└── dist/                       # Build output (gitignored)
 ```
 
 ## Prerequisites
