@@ -1,0 +1,7 @@
+node_modules
+.angular/
+dist/
+.rendered/
+dist-config*.json
+.env
+.DS_Store

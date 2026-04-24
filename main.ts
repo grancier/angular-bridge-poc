@@ -14,7 +14,7 @@
 // Host: SFCC ISML template loads <acme-bridge-poc> custom element.
 // =============================================================================
 
-import { Component, Injectable, ElementRef, signal, computed, ChangeDetectionStrategy, ViewEncapsulation } from '@angular/core';
+import { Component, Injectable, Input, ElementRef, signal, computed, ChangeDetectionStrategy, ViewEncapsulation } from '@angular/core';
 import { bootstrapApplication, createApplication } from '@angular/platform-browser';
 import { createCustomElement } from '@angular/elements';
 import { provideZonelessChangeDetection, ApplicationRef, Injector } from '@angular/core';
@@ -39,21 +39,49 @@ interface ResizeRequest {
   height: number;
 }
 
-/** Inbound event: commerce response from SFCC host bridge */
+/** SFRA Cart-AddProduct response shape */
 interface CartResponse {
-  success: boolean;
   error?: boolean;
   message?: string;
-  itemsRequested?: number;
-  itemsAdded?: number;
-  itemsFailed?: Array<{ materialRef: string; reason: string }>;
-  basket?: {
-    itemCount: number;
-    total: number;
-    currency: string;
-    promos?: string[];
+  quantityTotal?: number;
+  cart?: {
+    numItems?: number;
+    totals?: {
+      grandTotal?: string;
+      subTotal?: string;
+      totalShippingCost?: string;
+    };
   };
 }
+
+/** Product tile data — in production this comes from SFCC pdict */
+interface Product {
+  id: string;
+  name: string;
+  image: string;
+  price: string;
+  brand: string;
+  url: string;
+  quantity: number;
+  availability: string;
+  category: string;
+  variant: string;
+  variantId: string;
+}
+
+const PRODUCT: Product = {
+  id: '2011084-base',
+  name: 'Cricut Maker® 4',
+  image: 'https://cricut.com/dw/image/v2/BHBM_PRD/on/demandware.static/-/Sites-cricut-master-catalog/default/dwc0a445f4/Maker4/Maker4_Updates/1_Hero_2011084_Maker4_Seashell.jpg?sw=600&q=65',
+  price: '399.00',
+  brand: 'cricut',
+  url: 'https://cricut.com/en-us/cutting-machines/cricut-maker/cricut-maker-4/cricut-maker-4/2011084.html',
+  quantity: 1,
+  availability: 'InStock',
+  category: 'machines_cricut-maker-machines',
+  variant: 'Machine Only',
+  variantId: '2011084',
+};
 
 /** All bridge event names with ds: prefix */
 type BridgeEvent =
@@ -94,14 +122,40 @@ export class SfccBridgeService {
   }
 
   /**
-   * Add a single product to the SFCC cart.
+   * Add a single product to the SFRA cart.
    *
-   * Dispatches ds:add-to-cart, waits for ds:cart-response.
-   * Angular never calls an SFCC endpoint — it only knows the event contract.
+   * POSTs form-urlencoded `pid` and `quantity` to the SFRA Cart-AddProduct
+   * controller, matching the request shape SFRA's own client code uses.
+   * Cookies are included so the SFCC session is attached.
    */
-  addToCart(pid: string, quantity: number = 1): Promise<CartResponse> {
-    const detail: AddToCartRequest = { pid, quantity };
-    return this.dispatchAndAwaitResponse('ds:add-to-cart', detail, this.DEFAULT_TIMEOUT_MS);
+  async addToCart(pid: string, quantity: number, endpoint: string): Promise<CartResponse> {
+    if (!endpoint) {
+      console.warn('[SfccBridge] No cart-endpoint configured — returning mock SFRA response');
+      return {
+        error: false,
+        message: 'Mock: product added (standalone mode, no cart-endpoint)',
+        quantityTotal: quantity,
+        cart: { numItems: quantity, totals: { grandTotal: `$${(399 * quantity).toFixed(2)}` } },
+      };
+    }
+
+    const body = new URLSearchParams({ pid, quantity: String(quantity) });
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Accept': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      body,
+    });
+
+    if (!res.ok) {
+      throw new Error(`SFRA Cart-AddProduct failed: HTTP ${res.status}`);
+    }
+
+    return (await res.json()) as CartResponse;
   }
 
   /**
@@ -418,12 +472,14 @@ export class SfccBridgeService {
         <!-- Product display -->
         <div class="product-row">
           <div class="product-image">
-            <span class="placeholder-icon">&#9881;</span>
+            <img [src]="product.image" [alt]="product.name" />
           </div>
           <div class="product-info">
-            <p class="product-name">{{ productName }}</p>
-            <p class="product-pid">PID: {{ productPid }}</p>
-            <p class="product-price">\${{ productPrice }}</p>
+            <p class="product-name">
+              <a [href]="product.url" target="_blank" rel="noopener">{{ product.name }}</a>
+            </p>
+            <p class="product-pid">PID: {{ product.variantId }} &middot; {{ product.variant }}</p>
+            <p class="product-price">\${{ product.price }}</p>
           </div>
         </div>
 
@@ -474,10 +530,10 @@ export class SfccBridgeService {
 })
 export class BridgePocComponent {
 
-  // Hard-coded demo product — in production, these come from SFCC pdict
-  readonly productName = 'Acme Maker 3';
-  readonly productPid = '2008334';
-  readonly productPrice = '399.99';
+  readonly product: Product = PRODUCT;
+
+  /** SFRA Cart-AddProduct endpoint — set via `cart-endpoint` HTML attribute. */
+  @Input() cartEndpoint = '';
 
   // Reactive state via signals — no Zone.js, no implicit change detection
   readonly state = signal<'idle' | 'loading' | 'success' | 'error'>('idle');
@@ -512,22 +568,28 @@ export class BridgePocComponent {
   async onAddToCart(): Promise<void> {
     this.state.set('loading');
     this.statusMessage.set(null);
-    this.logEvent('ds:add-to-cart', `pid=${this.productPid} qty=1`);
+    this.logEvent('sfra:add-product', `pid=${this.product.variantId} qty=${this.product.quantity}`);
 
     try {
-      const response = await this.bridge.addToCart(this.productPid, 1);
+      const response = await this.bridge.addToCart(
+        this.product.variantId,
+        this.product.quantity,
+        this.cartEndpoint,
+      );
 
-      if (response.success) {
+      if (!response.error) {
         this.state.set('success');
-        const msg = response.basket
-          ? `Added! Cart: ${response.basket.itemCount} items, ${response.basket.currency} ${response.basket.total}`
+        const total = response.cart?.totals?.grandTotal;
+        const items = response.quantityTotal ?? response.cart?.numItems;
+        const msg = total
+          ? `Added! Cart: ${items ?? '?'} item(s), ${total}`
           : response.message || 'Added to cart';
         this.statusMessage.set(msg);
-        this.logEvent('ds:cart-response', `success — ${msg}`);
+        this.logEvent('sfra:cart-response', `success — ${msg}`);
       } else {
         this.state.set('error');
         this.statusMessage.set(response.message || 'Add to cart failed');
-        this.logEvent('ds:cart-response', `error — ${response.message}`);
+        this.logEvent('sfra:cart-response', `error — ${response.message}`);
       }
 
       // Reset button state after 3 seconds
@@ -541,7 +603,7 @@ export class BridgePocComponent {
       this.state.set('error');
       const message = err instanceof Error ? err.message : 'Unknown error';
       this.statusMessage.set(message);
-      this.logEvent('ds:cart-response', `timeout/error — ${message}`);
+      this.logEvent('sfra:cart-response', `error — ${message}`);
     }
   }
 

@@ -1,0 +1,28 @@
+# Copy to .env and fill in values from your AWS setup.
+# Used by config templates (*.json, index.html) and npm scripts.
+
+# S3 bucket that stores the built bundle
+CDN_BUCKET=your-cdn-bucket
+
+# Region the bucket lives in (used in the S3 origin domain)
+AWS_REGION=us-east-1
+
+# 12-digit AWS account ID that owns the CloudFront distribution
+AWS_ACCOUNT_ID=123456789012
+
+# CloudFront distribution ID
+CF_DISTRIBUTION_ID=EXXXXXXXXXXXXX
+
+# CloudFront distribution domain (what browsers hit)
+CF_DOMAIN=xxxxxxxxxxxxxx.cloudfront.net
+
+# Origin Access Control ID used by the distribution
+CF_OAC_ID=EXXXXXXXXXXXXX
+
+# CloudFront response-headers policy ID attached to the default cache behavior.
+# Default is AWS-managed "Managed-SimpleCORS" (stable ID). Replace with a custom
+# policy ID if you need specific origin echoing, credentials, or security headers.
+CF_RESPONSE_HEADERS_POLICY_ID=60669652-455b-4ae9-85a4-c4c02393f86c
+
+# Comma-separated storefront origins allowed to fetch from the CDN (used by cors-config.json)
+ALLOWED_ORIGINS=https://www.example.com,http://localhost:3000,http://localhost:4200

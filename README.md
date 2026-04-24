@@ -6,8 +6,8 @@ Minimal proof-of-concept that validates the Angular Elements architecture for em
 
 1. **Shadow DOM isolation** — Angular styles don't leak into SFRA; SFRA styles don't leak into Angular.
 2. **Zoneless Angular** — No Zone.js. SFRA's jQuery event loop is unaffected.
-3. **CustomEvent bridge** — `ds:add-to-cart` escapes the shadow root via `composed: true`, host listener translates it into an SFCC cart operation, `ds:cart-response` returns to Angular.
-4. **jQuery storefront sync** — `product:afterAddToCart` and `count:update` triggers fire after cart mutation, proving minicart/badge integration works.
+3. **Shadow-root fetch to SFRA** — the component calls `Cart-AddProduct` directly from inside the shadow root with `credentials: 'include'`, so the SFCC session cookie attaches automatically. No host-page script required for add-to-cart.
+4. **CustomEvent bridge (available for host-driven flows)** — `SfccBridgeService` still exposes `resize`, `projectSaved`, and `resolveProject` helpers that dispatch `composed: true` events. Not exercised by the current PoC button but wired up for the real App integration.
 5. **CDN-hosted bundles** — Angular loads from an external CDN, not cartridge static assets. Zero build coupling.
 6. **Independent deployment** — Angular deploys to S3/CloudFront. SFCC deploys its cartridge. The only sync point is a version string in Site Preferences.
 
@@ -34,18 +34,35 @@ poc/
 - AWS CLI configured with credentials for the target S3 bucket
 - SFCC sandbox with cartridge upload access
 
+### Environment setup
+
+Templates in this repo (config JSON, test HTML) use `${VAR}` placeholders that are resolved at render time from a local `.env` file. The `.env` file is gitignored; `env-example` is the committed reference.
+
+```bash
+npm install
+cp env-example .env
+# Edit .env with your AWS values
+```
+
+Required variables (see [env-example](env-example) for descriptions):
+
+| Variable | Purpose |
+|---|---|
+| `CDN_BUCKET` | S3 bucket that stores the built bundle |
+| `AWS_REGION` | Region for the S3 origin domain |
+| `AWS_ACCOUNT_ID` | Owner of the CloudFront distribution |
+| `CF_DISTRIBUTION_ID` | CloudFront distribution ID |
+| `CF_DOMAIN` | CloudFront domain (browsers hit this) |
+| `CF_OAC_ID` | Origin Access Control ID |
+| `CF_RESPONSE_HEADERS_POLICY_ID` | CloudFront response-headers policy (defaults to AWS-managed `Managed-SimpleCORS`) |
+| `ALLOWED_ORIGINS` | Comma-separated storefront origins for S3 CORS rules |
+
+Template files that reference these: [bucket-policy.json](bucket-policy.json), [cf-distro-config.json](cf-distro-config.json), [cors-config.json](cors-config.json), [index.html](index.html).
+
 ## Build
 
 ```bash
-cd poc/angular
-
-# Install dependencies
-npm install
-
-# Development build (source maps, no optimization)
-ng build --configuration=development
-
-# Production build (optimized, hashed filenames, ESM output)
+# Production build (optimized, hashed filenames, ESM output, writes asset-manifest.json)
 npm run build:cdn
 ```
 
@@ -54,60 +71,76 @@ The production build outputs to `dist/acme-bridge-poc/browser/`:
 ```
 dist/acme-bridge-poc/browser/
 ├── main-[hash].js              # Angular application bundle
-├── polyfills-[hash].js         # Polyfills (minimal without Zone.js)
-├── chunk-[hash].js             # Lazy chunks (if any)
 └── asset-manifest.json         # Maps logical names to hashed filenames
 ```
 
-## Local Development (Standalone Mode)
+`main-[hash].js` rotates per build. The hash is auto-substituted into [index.html](index.html) via the `${BUNDLE_MAIN}` placeholder during the render step.
+
+## Local Development
+
+Two ways to run the app locally:
+
+**1. `ng serve` — mock cart mode (no AWS needed)**
 
 ```bash
-cd poc/angular
-ng serve
+npm run serve
 ```
 
-Open `http://localhost:4200`. The `SfccBridgeService` detects it's not embedded inside SFCC and returns mock responses. The button works, the event log populates, and the component renders inside its shadow root — all without SFCC running.
+Open `http://localhost:4200`. The `SfccBridgeService` detects no `cart-endpoint` attribute and returns mock cart responses. Useful for UI iteration without SFRA running.
+
+**2. `npm run serve:test` — load the deployed CDN bundle**
+
+```bash
+npm run build:cdn        # produce a fresh asset-manifest.json
+npm run deploy:s3        # (optional) push to S3 if you haven't already
+npm run serve:test       # renders templates + serves .rendered/ at :3000
+```
+
+Open `http://localhost:3000/index.html`. This serves the rendered `index.html` (with concrete `CF_DOMAIN` and `BUNDLE_MAIN` substituted), loading the Angular bundle cross-origin from your CloudFront distribution — the closest local approximation of the SFRA embedding.
 
 To verify Shadow DOM isolation, inspect the element in DevTools: you should see `#shadow-root (open)` under `<acme-bridge-poc>`. Styles defined inside the component are not visible in the parent document's stylesheet list.
 
 ## Deploy to AWS (S3 + CloudFront)
 
-### One-time setup
+Assumes [environment setup](#environment-setup) is complete.
 
-1. **S3 bucket** — Create a bucket (e.g., `acme-bridge-poc-cdn`) with public access blocked. CloudFront will serve as the public edge.
+### One-time AWS resource setup
 
-2. **CloudFront distribution** — Create a distribution with:
+1. **S3 bucket** — Create a private bucket (public access blocked). CloudFront serves as the public edge.
+
+2. **CloudFront distribution** — Create with:
    - Origin: the S3 bucket (use OAC, not OAI)
    - Default cache behavior: `Cache-Control` header from origin
-   - CORS: allow `https://www.acme.com`, `https://clsb01.acme.com`, `https://clsb02.acme.com`
-   - Custom domain (optional): `cdn.acme.com` with wildcard cert
+   - Response headers policy: CORS allowing your storefront origins (see [cors-config.json](cors-config.json))
+   - Custom domain (optional): your CDN hostname with wildcard cert
 
-3. **Environment variables** for deploy scripts:
+3. **Apply rendered configs** — render the templates into `.rendered/`, then pass them to the AWS CLI:
    ```bash
-   export CDN_BUCKET=acme-bridge-poc-cdn
-   export CF_DISTRIBUTION_ID=E1234567890ABC
+   npm run config:render
+   aws s3api put-bucket-policy --bucket "$CDN_BUCKET" --policy file://.rendered/bucket-policy.json
+   aws s3api put-bucket-cors   --bucket "$CDN_BUCKET" --cors-configuration file://.rendered/cors-config.json
+   aws cloudfront create-distribution --distribution-config file://.rendered/cf-distro-config.json
    ```
 
 ### Deploy a build
 
 ```bash
-cd poc/angular
-
-# Build, generate manifest, upload to S3, invalidate manifest cache
+# Build, upload to S3, invalidate manifest cache.
+# deploy:s3 and invalidate:cf auto-load values from .env.
 npm run build:cdn
 npm run deploy:s3
 npm run invalidate:cf
 ```
 
-This uploads all hashed bundles with `Cache-Control: public, max-age=31536000, immutable`. The `asset-manifest.json` is uploaded with `Cache-Control: no-cache` so SFCC always resolves the latest filenames for a given version.
+Hashed bundles upload with `Cache-Control: public, max-age=31536000, immutable`. The `asset-manifest.json` uploads with `Cache-Control: no-cache` so SFCC always resolves the latest filename for a given version.
 
 ### Versioned paths
 
 Each version deploys to its own prefix:
 
 ```
-s3://acme-bridge-poc-cdn/bridge-poc/0.0.1/main-3a7f2c.js
-s3://acme-bridge-poc-cdn/bridge-poc/0.0.2/main-9b1e4d.js
+s3://$CDN_BUCKET/bridge-poc/0.0.1/main-3a7f2c.js
+s3://$CDN_BUCKET/bridge-poc/0.0.2/main-9b1e4d.js
 ```
 
 Old versions remain cached at the edge indefinitely. Rollback = change the version string in SFCC Site Preferences.
@@ -146,7 +179,7 @@ Create two custom site preferences in Business Manager:
 
 | Preference ID       | Type   | Value (sandbox)                                            |
 |----------------------|--------|------------------------------------------------------------|
-| `bridgePocCdnBase`  | String | `https://d1234567890.cloudfront.net/bridge-poc`            |
+| `bridgePocCdnBase`  | String | `https://<your-cdn-domain>/bridge-poc`                     |
 | `bridgePocVersion`  | String | `0.0.1`                                                    |
 
 The ISML template reads these to construct the CDN URLs. To deploy a new Angular build, update `bridgePocVersion` — no cartridge redeploy required.
@@ -158,11 +191,9 @@ The ISML template reads these to construct the CDN URLs. To deploy a new Angular
 3. Navigate to `https://[sandbox-hostname]/en-us/bridgepoc`
 4. Verify:
    - The component renders inside a shadow root (DevTools → Elements → `#shadow-root (open)`)
-   - Clicking "Add to Cart" dispatches `ds:add-to-cart` (visible in the event log)
-   - The SFCC `Cart-AddProduct` endpoint receives the request with `dwsid` cookie
-   - The minicart flyout opens (jQuery trigger fires)
-   - The cart badge updates (jQuery trigger fires)
-   - The component shows the cart response (item count, total)
+   - Clicking "Add to Cart" issues a `POST` to `Cart-AddProduct` from inside the shadow root (DevTools → Network)
+   - The request carries the `dwsid` session cookie automatically (no explicit credential handling)
+   - The component shows the SFRA cart response (quantity, grand total)
    - SFRA styles (header, footer, nav) are unaffected by Angular's styles
    - Angular's styles are unaffected by SFRA's stylesheets
 
@@ -179,21 +210,21 @@ This PoC proves or disproves the following claims from the architecture document
 | Shadow DOM isolates CSS | Add a conflicting `.poc-card { background: red }` to SFRA's global CSS. Angular's card should remain white. |
 | Shadow DOM isolates DOM | Run `document.querySelector('.poc-card')` in the console. It should return `null` (element is behind shadow root). |
 | Zoneless Angular doesn't break jQuery | Open any PDP on the same site, add to cart, confirm minicart still works. Zone.js is not loaded globally. |
-| CustomEvents cross shadow boundary | Watch the event log in the component and `console.log` in the bridge listener — both should fire on click. |
-| `composed: true` is required | Temporarily remove `composed: true` from the bridge service. The host listener should stop receiving events. |
+| Shadow-root fetch reaches SFRA | Watch the Network tab — the `Cart-AddProduct` POST is initiated by the Angular bundle and carries the `dwsid` cookie. |
 | CDN bundles cache independently | Deploy Angular v0.0.2, update Site Preference. Old pages still serve v0.0.1 from edge until cache expires or is invalidated. |
 | SFCC session cookies attach automatically | Inspect the `Cart-AddProduct` request in Network tab — `dwsid` and `dwsecuretoken_*` cookies should be present with no explicit credential handling. |
+| CustomEvent bridge still works (for non-cart flows) | Call `this.bridge.resize(500)` from the browser console with the component selected; confirm a `ds:resize` event fires on the host element. |
 
 ## Graduating to Production
 
 When the PoC validates, the path to the full App integration is:
 
 1. Replace `acme-bridge-poc` with `acme-app` (full Angular app with canvas, artboard, project routing)
-2. Add `ds:resolve-project` handler to the bridge (calls `AcmeBridge-ResolveProject` controller)
-3. Add `ds:project-saved` handler (cache eviction)
-4. Move CDN base from PoC bucket to `cdn.acme.com/app/`
+2. Wire `ds:resolve-project` to a real `AcmeBridge-ResolveProject` controller
+3. Wire `ds:project-saved` (cache eviction)
+4. Move CDN base to your production distribution (new `.env` values)
 5. Add `fonts.css` to CDN, load in parent `<head>`
 6. Add Auth0 config attributes to the custom element
 7. Swap hardcoded demo product for real material resolution flow
 
-The bridge listener pattern, Shadow DOM encapsulation, CDN loading, and jQuery sync mechanism carry forward unchanged.
+The shadow-root fetch pattern, CustomEvent bridge helpers, CDN loading, and SFCC session cookie flow carry forward unchanged.

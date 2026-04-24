@@ -1,0 +1,31 @@
+{
+  "CallerReference": "bridge-poc-init",
+  "Comment": "Bridge PoC Angular CDN",
+  "Enabled": true,
+  "DefaultCacheBehavior": {
+    "TargetOriginId": "acme-bridge-poc-s3",
+    "ViewerProtocolPolicy": "redirect-to-https",
+    "AllowedMethods": {
+      "Quantity": 2,
+      "Items": ["GET", "HEAD"]
+    },
+    "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6",
+    "ResponseHeadersPolicyId": "${CF_RESPONSE_HEADERS_POLICY_ID}",
+    "Compress": true
+  },
+  "Origins": {
+    "Quantity": 1,
+    "Items": [
+      {
+        "Id": "acme-bridge-poc-s3",
+        "DomainName": "${CDN_BUCKET}.s3.${AWS_REGION}.amazonaws.com",
+        "OriginAccessControlId": "${CF_OAC_ID}",
+        "S3OriginConfig": {
+          "OriginAccessIdentity": ""
+        }
+      }
+    ]
+  },
+  "DefaultRootObject": "index.html",
+  "PriceClass": "PriceClass_100"
+}
