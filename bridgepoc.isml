@@ -101,67 +101,55 @@
                 return tag ? tag.getAttribute('content') : '';
             })();
 
-            // CSRF token lookup — adjust selector to match your SFRA setup
-            function getCsrfToken() {
-                var tokenEl = document.querySelector(
-                    'input[name="csrf_token"], meta[name="csrf-token"]'
-                );
-                return tokenEl
-                    ? (tokenEl.value || tokenEl.getAttribute('content'))
-                    : '';
+            function respond(detail) {
+                el.dispatchEvent(new CustomEvent('ds:cart-response', { detail: detail }));
             }
 
             // ---- ds:add-to-cart ----
+            // Host owns the fetch. Cart-AddProduct has no CSRF middleware in
+            // cricut-refapp (verified across base + all int_* overlays), so
+            // same-origin + credentials is sufficient. dwsid rides the cookie.
             el.addEventListener('ds:add-to-cart', function (e) {
                 var detail = e.detail || {};
                 var pid = detail.pid;
                 var qty = detail.quantity || 1;
-                if (!pid || !addToCartUrl) return;
 
-                // SFCC Cart-AddProduct expects form-encoded data (gotcha #8)
-                var formData = new FormData();
-                formData.append('pid', pid);
-                formData.append('quantity', String(qty));
+                if (!pid || !addToCartUrl) {
+                    respond({ error: true, message: !pid ? 'Missing pid' : 'Missing Cart-AddProduct URL' });
+                    return;
+                }
 
-                var csrfToken = getCsrfToken();
-                if (csrfToken) formData.append('csrf_token', csrfToken);
+                var body = new URLSearchParams();
+                body.append('pid', pid);
+                body.append('quantity', String(qty));
 
                 fetch(addToCartUrl, {
                     method: 'POST',
-                    body: formData,
-                    credentials: 'same-origin'
+                    credentials: 'same-origin',
+                    headers: {
+                        'Accept': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    body: body
                 })
-                .then(function (res) { return res.json(); })
+                .then(function (res) {
+                    if (!res.ok) {
+                        throw new Error('Cart-AddProduct failed: HTTP ' + res.status);
+                    }
+                    return res.json();
+                })
                 .then(function (data) {
-                    // Respond to Angular
-                    el.dispatchEvent(new CustomEvent('ds:cart-response', {
-                        detail: {
-                            success: !data.error,
-                            message: data.message || null,
-                            basket: {
-                                itemCount: data.quantityTotal || 0,
-                                total: data.cart && data.cart.totals
-                                       ? data.cart.totals.grandTotal
-                                       : 0,
-                                currency: 'USD'
-                            }
-                        }
-                    }));
+                    // Pass the raw SFRA response through; Angular speaks SFRA-native.
+                    respond(data);
 
-                    // Sync storefront chrome — non-negotiable jQuery triggers
+                    // Sync storefront chrome — SFRA minicart reads data.quantityTotal
                     if (window.jQuery) {
                         window.jQuery('body').trigger('product:afterAddToCart', data);
                         window.jQuery('.minicart').trigger('count:update', data);
                     }
                 })
                 .catch(function (err) {
-                    el.dispatchEvent(new CustomEvent('ds:cart-response', {
-                        detail: {
-                            success: false,
-                            error: true,
-                            message: err.message || 'Network error'
-                        }
-                    }));
+                    respond({ error: true, message: err.message || 'Network error' });
                 });
             });
 

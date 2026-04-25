@@ -9,8 +9,8 @@
     "serve": "ng serve",
     "config:render": "node scripts/render-config.mjs",
     "serve:test": "npm run config:render && npx serve .rendered",
-    "deploy:s3": "set -a && . ./.env && set +a && aws s3 sync dist/acme-bridge-poc/browser/ s3://${CDN_BUCKET}/bridge-poc/${npm_package_version}/ --cache-control 'public,max-age=31536000,immutable' --exclude 'asset-manifest.json' && aws s3 cp dist/acme-bridge-poc/browser/asset-manifest.json s3://${CDN_BUCKET}/bridge-poc/${npm_package_version}/asset-manifest.json --cache-control 'no-cache'",
-    "invalidate:cf": "set -a && . ./.env && set +a && aws cloudfront create-invalidation --distribution-id ${CF_DISTRIBUTION_ID} --paths \"/bridge-poc/${npm_package_version}/asset-manifest.json\""
+    "deploy:s3": "set -a && . ./.env && set +a && aws s3 sync dist/acme-bridge-poc/browser/ s3://${CDN_BUCKET}/bridge-poc/${npm_package_version}/ --cache-control 'public,max-age=31536000,immutable'",
+    "invalidate:cf": "set -a && . ./.env && set +a && aws cloudfront create-invalidation --distribution-id ${CF_DISTRIBUTION_ID} --paths \"/bridge-poc/${npm_package_version}/*\""
   },
   "dependencies": {
     "@angular/core": "^21.0.0",

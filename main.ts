@@ -14,7 +14,7 @@
 // Host: SFCC ISML template loads <acme-bridge-poc> custom element.
 // =============================================================================
 
-import { Component, Injectable, Input, ElementRef, signal, computed, ChangeDetectionStrategy, ViewEncapsulation } from '@angular/core';
+import { Component, Injectable, ElementRef, signal, computed, ChangeDetectionStrategy, ViewEncapsulation } from '@angular/core';
 import { bootstrapApplication, createApplication } from '@angular/platform-browser';
 import { createCustomElement } from '@angular/elements';
 import { provideZonelessChangeDetection, ApplicationRef, Injector } from '@angular/core';
@@ -124,38 +124,13 @@ export class SfccBridgeService {
   /**
    * Add a single product to the SFRA cart.
    *
-   * POSTs form-urlencoded `pid` and `quantity` to the SFRA Cart-AddProduct
-   * controller, matching the request shape SFRA's own client code uses.
-   * Cookies are included so the SFCC session is attached.
+   * Dispatches ds:add-to-cart on the host element and awaits ds:cart-response.
+   * The ISML host owns the fetch, CSRF, cookies, and jQuery minicart sync;
+   * Angular stays commerce-agnostic.
    */
-  async addToCart(pid: string, quantity: number, endpoint: string): Promise<CartResponse> {
-    if (!endpoint) {
-      console.warn('[SfccBridge] No cart-endpoint configured — returning mock SFRA response');
-      return {
-        error: false,
-        message: 'Mock: product added (standalone mode, no cart-endpoint)',
-        quantityTotal: quantity,
-        cart: { numItems: quantity, totals: { grandTotal: `$${(399 * quantity).toFixed(2)}` } },
-      };
-    }
-
-    const body = new URLSearchParams({ pid, quantity: String(quantity) });
-
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Accept': 'application/json',
-        'X-Requested-With': 'XMLHttpRequest',
-      },
-      body,
-    });
-
-    if (!res.ok) {
-      throw new Error(`SFRA Cart-AddProduct failed: HTTP ${res.status}`);
-    }
-
-    return (await res.json()) as CartResponse;
+  addToCart(pid: string, quantity: number): Promise<CartResponse> {
+    const detail: AddToCartRequest = { pid, quantity };
+    return this.dispatchAndAwaitResponse('ds:add-to-cart', detail, this.DEFAULT_TIMEOUT_MS);
   }
 
   /**
@@ -201,13 +176,14 @@ export class SfccBridgeService {
     timeoutMs: number
   ): Promise<CartResponse> {
 
-    // Standalone mode: return a mock response for local development
+    // Standalone mode: return a mock SFRA-shaped response for local development
     if (!this.isEmbedded) {
-      console.warn(`[SfccBridge] Not embedded — mocking response for ${eventName}`);
+      console.warn(`[SfccBridge] Not embedded — mocking SFRA response for ${eventName}`);
       return Promise.resolve({
-        success: true,
+        error: false,
         message: 'Mock response (standalone mode)',
-        basket: { itemCount: 1, total: 29.99, currency: 'USD' },
+        quantityTotal: 1,
+        cart: { numItems: 1, totals: { grandTotal: '$399.00' } },
       });
     }
 
@@ -532,9 +508,6 @@ export class BridgePocComponent {
 
   readonly product: Product = PRODUCT;
 
-  /** SFRA Cart-AddProduct endpoint — set via `cart-endpoint` HTML attribute. */
-  @Input() cartEndpoint = '';
-
   // Reactive state via signals — no Zone.js, no implicit change detection
   readonly state = signal<'idle' | 'loading' | 'success' | 'error'>('idle');
   readonly statusMessage = signal<string | null>(null);
@@ -574,7 +547,6 @@ export class BridgePocComponent {
       const response = await this.bridge.addToCart(
         this.product.variantId,
         this.product.quantity,
-        this.cartEndpoint,
       );
 
       if (!response.error) {
