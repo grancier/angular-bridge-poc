@@ -29,6 +29,9 @@ const manifestPath = join(root, 'dist', 'acme-bridge-poc', 'browser', 'asset-man
 if (existsSync(manifestPath)) {
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   if (manifest.main) env.BUNDLE_MAIN = manifest.main;
+  if (manifest.loader) env.BUNDLE_LOADER = manifest.loader;
+  if (manifest.iframe?.main) env.BUNDLE_IFRAME = manifest.iframe.main;
+  if (manifest.customEvent?.main) env.BUNDLE_CUSTOM_EVENT = manifest.customEvent.main;
 }
 
 const templates = [

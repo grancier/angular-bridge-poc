@@ -1,9 +1,19 @@
 <!DOCTYPE html>
 <html>
-<head><title>Bridge PoC — CDN Standalone postMessage</title></head>
+<head><title>Bridge PoC — CDN Standalone iframe</title></head>
 <body>
   <h1>SFRA Shell Simulation</h1>
-  <acme-bridge-poc></acme-bridge-poc>
-  <script type="module" src="https://${CF_DOMAIN}/bridge-poc/0.0.1/${BUNDLE_MAIN}"></script>
+  <ds-canvas-host></ds-canvas-host>
+  <script src="https://${CF_DOMAIN}/bridge-poc/0.0.1/${BUNDLE_LOADER}"></script>
+  <script>
+    window.__sfcc.mountCanvas({
+      mode: 'iframe',
+      root: 'ds-canvas-host',
+      bundles: {
+        iframe: 'https://${CF_DOMAIN}/bridge-poc/0.0.1/${BUNDLE_IFRAME}',
+        'custom-event': 'https://${CF_DOMAIN}/bridge-poc/0.0.1/${BUNDLE_CUSTOM_EVENT}'
+      }
+    });
+  </script>
 </body>
 </html>
