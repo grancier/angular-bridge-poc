@@ -3,6 +3,7 @@ import {
   CONTRACT_VERSION,
   type DsAddToCartPayload,
   type DsCartResponsePayload,
+  type DsDesignProductSelectedPayload,
   type DsProjectSavedPayload,
   type DsResolveProjectPayload,
   type DsResizePayload,
@@ -20,6 +21,7 @@ export class PostMessageBridgeTransport implements BridgeTransport {
   private readonly defaultTimeoutMs = 5000;
   private readonly parentOrigin = this.resolveParentOrigin();
   readonly bootstrapStatus = signal<BootstrapStatus>(this.isEmbedded ? 'pending' : 'n/a');
+  readonly selectedProduct = signal<DsDesignProductSelectedPayload | null>(null);
   private bootstrapConfig: SfccBootstrapConfig | null = null;
   private bootstrapCleanup: (() => void) | null = null;
   private readyForBootstrapSent = false;
@@ -34,6 +36,7 @@ export class PostMessageBridgeTransport implements BridgeTransport {
 
   initialize(): void {
     this.startBootstrapHandshake();
+    this.listenForProductSelection();
   }
 
   addToCart(payload: DsAddToCartPayload): Promise<DsCartResponsePayload> {
@@ -116,6 +119,15 @@ export class PostMessageBridgeTransport implements BridgeTransport {
       { contractVersion: CONTRACT_VERSION },
       this.parentOrigin,
     );
+  }
+
+  private listenForProductSelection(): void {
+    if (!this.isEmbedded || !this.parentOrigin) return;
+
+    onDsPostMessage(window, 'ds:design-product-selected', this.parentOrigin, (payload) => {
+      this.selectedProduct.set(payload);
+      console.info('[SfccBridge] Product selected:', payload.pid, payload.productName);
+    });
   }
 
   private getActiveParentOrigin(): string | null {

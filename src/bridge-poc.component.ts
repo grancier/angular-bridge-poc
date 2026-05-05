@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, ElementRef, Inject, ViewEncapsulation, computed, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, Inject, ViewEncapsulation, computed, effect, signal } from '@angular/core';
 import type { DsAddToCartPayload } from '@cricut/ds-sfcc-contract';
 import { BRIDGE_TRANSPORT, type BridgeTransport } from './bridge-transport';
 import { PRODUCT, type Product } from './product';
@@ -195,14 +195,14 @@ const BRIDGE_POC_TEMPLATE = `
     <div class="poc-body">
       <div class="product-row">
         <div class="product-image">
-          <img [src]="product.image" [alt]="product.name" />
+          <img [src]="product().image" [alt]="product().name" />
         </div>
         <div class="product-info">
           <p class="product-name">
-            <a [href]="product.url" target="_blank" rel="noopener">{{ product.name }}</a>
+            <a [href]="product().url" target="_blank" rel="noopener">{{ product().name }}</a>
           </p>
-          <p class="product-pid">PID: {{ product.variantId }} &middot; {{ product.variant }}</p>
-          <p class="product-price">\${{ product.price }}</p>
+          <p class="product-pid">PID: {{ product().variantId }} &middot; {{ product().variant }}</p>
+          <p class="product-price">\${{ product().price }}</p>
         </div>
       </div>
 
@@ -255,7 +255,7 @@ const BRIDGE_POC_TEMPLATE = `
 `;
 
 export abstract class BridgePocComponentBase {
-  readonly product: Product = PRODUCT;
+  readonly product = signal<Product>(PRODUCT);
   readonly state = signal<'idle' | 'loading' | 'success' | 'error'>('idle');
   readonly statusMessage = signal<string | null>(null);
   readonly lastResponseSource = signal<'sfcc' | 'mock' | null>(null);
@@ -283,6 +283,25 @@ export abstract class BridgePocComponentBase {
   ) {
     this.bridge.initialize(elRef.nativeElement);
     this.hasShadowRoot = !!elRef.nativeElement.shadowRoot;
+
+    effect(() => {
+      const selected = this.bridge.selectedProduct();
+      if (!selected) return;
+      this.product.set({
+        ...PRODUCT,
+        id: selected.pid,
+        name: selected.productName,
+        image: selected.imageUrl,
+        url: selected.productUrl,
+        price: selected.price,
+        quantity: selected.quantity,
+        variantId: selected.variantId,
+        variant: selected.variantId,
+      });
+      this.state.set('idle');
+      this.statusMessage.set(null);
+      this.logEvent('ds:design-product-selected', `pid=${selected.pid} ${selected.productName}`);
+    });
   }
 
   async onAddToCart(): Promise<void> {
@@ -291,7 +310,8 @@ export abstract class BridgePocComponentBase {
     this.lastResponseSource.set(null);
 
     const embedded = this.bridge.isEmbedded;
-    const skuLabel = `sku=${this.product.variantId} qty=${this.product.quantity}`;
+    const p = this.product();
+    const skuLabel = `sku=${p.variantId} qty=${p.quantity}`;
     this.logEvent('ds:add-to-cart',
       embedded
         ? `→ parent (${skuLabel})`
@@ -300,11 +320,11 @@ export abstract class BridgePocComponentBase {
 
     try {
       const payload: DsAddToCartPayload = {
-        sku: this.product.variantId,
-        qty: this.product.quantity,
-        projectId: this.product.projectId,
-        designAssetUrl: this.product.designAssetUrl,
-        previewUrl: this.product.image,
+        sku: p.variantId,
+        qty: p.quantity,
+        projectId: p.projectId,
+        designAssetUrl: p.designAssetUrl,
+        previewUrl: p.image,
       };
 
       const response = await this.bridge.addToCart(payload);

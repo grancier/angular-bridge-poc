@@ -5,6 +5,7 @@ import {
   onDsEvent,
   type DsAddToCartPayload,
   type DsCartResponsePayload,
+  type DsDesignProductSelectedPayload,
   type DsProjectSavedPayload,
   type DsResolveProjectPayload,
   type DsResizePayload,
@@ -18,6 +19,7 @@ export class CustomEventBridgeTransport implements BridgeTransport {
   readonly contractVersion = CONTRACT_VERSION;
   readonly parentOriginLabel = 'same-window';
   readonly bootstrapStatus = signal<BootstrapStatus>('n/a');
+  readonly selectedProduct = signal<DsDesignProductSelectedPayload | null>(null);
 
   private readonly defaultTimeoutMs = 5000;
   private hostElement: HTMLElement | null = null;
