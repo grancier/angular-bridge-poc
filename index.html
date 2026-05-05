@@ -4,14 +4,14 @@
 <body>
   <h1>SFRA Shell Simulation</h1>
   <ds-canvas-host></ds-canvas-host>
-  <script src="https://${CF_DOMAIN}/bridge-poc/0.0.1/${BUNDLE_LOADER}"></script>
+  <script src="https://${CF_DOMAIN}/bridge-poc/${DS_VERSION}/${BUNDLE_LOADER}"></script>
   <script>
     window.__sfcc.mountCanvas({
       mode: 'iframe',
       root: 'ds-canvas-host',
       bundles: {
-        iframe: 'https://${CF_DOMAIN}/bridge-poc/0.0.1/${BUNDLE_IFRAME}',
-        'custom-event': 'https://${CF_DOMAIN}/bridge-poc/0.0.1/${BUNDLE_CUSTOM_EVENT}'
+        iframe: 'https://${CF_DOMAIN}/bridge-poc/${DS_VERSION}/${BUNDLE_IFRAME}',
+        'custom-event': 'https://${CF_DOMAIN}/bridge-poc/${DS_VERSION}/${BUNDLE_CUSTOM_EVENT}'
       }
     });
   </script>
