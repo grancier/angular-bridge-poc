@@ -30,6 +30,15 @@ export class CustomEventBridgeTransport implements BridgeTransport {
 
   initialize(hostElement: HTMLElement): void {
     this.hostElement = hostElement;
+    this.listenForProductSelection();
+  }
+
+  private listenForProductSelection(): void {
+    if (!this.hostElement) return;
+    onDsEvent(this.hostElement, 'ds:design-product-selected', (payload) => {
+      this.selectedProduct.set(payload);
+      console.info('[SfccBridge] Product selected (CustomEvent):', payload.pid, payload.productName);
+    });
   }
 
   addToCart(payload: DsAddToCartPayload): Promise<DsCartResponsePayload> {

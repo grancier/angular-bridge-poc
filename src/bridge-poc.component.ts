@@ -193,29 +193,35 @@ const BRIDGE_POC_TEMPLATE = `
     </div>
 
     <div class="poc-body">
-      <div class="product-row">
-        <div class="product-image">
-          <img [src]="product().image" [alt]="product().name" />
+      @if (product()) {
+        <div class="product-row">
+          <div class="product-image">
+            <img [src]="product()!.image" [alt]="product()!.name" />
+          </div>
+          <div class="product-info">
+            <p class="product-name">
+              <a [href]="product()!.url" target="_blank" rel="noopener">{{ product()!.name }}</a>
+            </p>
+            <p class="product-pid">PID: {{ product()!.variantId }} &middot; {{ product()!.variant }}</p>
+            <p class="product-price">\${{ product()!.price }}</p>
+          </div>
         </div>
-        <div class="product-info">
-          <p class="product-name">
-            <a [href]="product().url" target="_blank" rel="noopener">{{ product().name }}</a>
-          </p>
-          <p class="product-pid">PID: {{ product().variantId }} &middot; {{ product().variant }}</p>
-          <p class="product-price">\${{ product().price }}</p>
-        </div>
-      </div>
 
-      <button
-        class="add-to-cart-btn"
-        [class.loading]="state() === 'loading'"
-        [class.success]="state() === 'success'"
-        [class.error]="state() === 'error'"
-        [disabled]="state() === 'loading'"
-        (click)="onAddToCart()"
-      >
-        {{ buttonLabel() }}
-      </button>
+        <button
+          class="add-to-cart-btn"
+          [class.loading]="state() === 'loading'"
+          [class.success]="state() === 'success'"
+          [class.error]="state() === 'error'"
+          [disabled]="state() === 'loading'"
+          (click)="onAddToCart()"
+        >
+          {{ buttonLabel() }}
+        </button>
+      } @else {
+        <div class="status-bar info">
+          Waiting for product selection&hellip; Click "Design T-Shirt" in the SFCC sidebar.
+        </div>
+      }
 
       @if (statusMessage()) {
         <div class="status-bar"
@@ -255,7 +261,7 @@ const BRIDGE_POC_TEMPLATE = `
 `;
 
 export abstract class BridgePocComponentBase {
-  readonly product = signal<Product>(PRODUCT);
+  readonly product = signal<Product | null>(null);
   readonly state = signal<'idle' | 'loading' | 'success' | 'error'>('idle');
   readonly statusMessage = signal<string | null>(null);
   readonly lastResponseSource = signal<'sfcc' | 'mock' | null>(null);
@@ -284,11 +290,14 @@ export abstract class BridgePocComponentBase {
     this.bridge.initialize(elRef.nativeElement);
     this.hasShadowRoot = !!elRef.nativeElement.shadowRoot;
 
+    if (!this.bridge.isEmbedded) {
+      this.product.set(PRODUCT);
+    }
+
     effect(() => {
       const selected = this.bridge.selectedProduct();
       if (!selected) return;
       this.product.set({
-        ...PRODUCT,
         id: selected.pid,
         name: selected.productName,
         image: selected.imageUrl,
@@ -297,6 +306,11 @@ export abstract class BridgePocComponentBase {
         quantity: selected.quantity,
         variantId: selected.variantId,
         variant: selected.variantId,
+        brand: '',
+        availability: 'InStock',
+        category: '',
+        projectId: `design-${selected.pid}`,
+        designAssetUrl: selected.imageUrl,
       });
       this.state.set('idle');
       this.statusMessage.set(null);
@@ -305,12 +319,14 @@ export abstract class BridgePocComponentBase {
   }
 
   async onAddToCart(): Promise<void> {
+    const p = this.product();
+    if (!p) return;
+
     this.state.set('loading');
     this.statusMessage.set(null);
     this.lastResponseSource.set(null);
 
     const embedded = this.bridge.isEmbedded;
-    const p = this.product();
     const skuLabel = `sku=${p.variantId} qty=${p.quantity}`;
     this.logEvent('ds:add-to-cart',
       embedded
