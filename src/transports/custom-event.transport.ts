@@ -1,4 +1,4 @@
-import { Injectable } from '@angular/core';
+import { Injectable, signal } from '@angular/core';
 import {
   CONTRACT_VERSION,
   dispatchDsEvent,
@@ -9,7 +9,7 @@ import {
   type DsResolveProjectPayload,
   type DsResizePayload,
 } from '@cricut/ds-sfcc-contract';
-import { type BridgeTransport, createMockCartResponse } from '../bridge-transport';
+import { type BootstrapStatus, type BridgeTransport, createMockCartResponse } from '../bridge-transport';
 
 @Injectable()
 export class CustomEventBridgeTransport implements BridgeTransport {
@@ -17,6 +17,7 @@ export class CustomEventBridgeTransport implements BridgeTransport {
   readonly modeLabel = 'CustomEvent';
   readonly contractVersion = CONTRACT_VERSION;
   readonly parentOriginLabel = 'same-window';
+  readonly bootstrapStatus = signal<BootstrapStatus>('n/a');
 
   private readonly defaultTimeoutMs = 5000;
   private hostElement: HTMLElement | null = null;

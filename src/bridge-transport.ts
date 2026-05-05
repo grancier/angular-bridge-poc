@@ -1,7 +1,8 @@
-import { InjectionToken } from '@angular/core';
+import { InjectionToken, type Signal } from '@angular/core';
 import { CONTRACT_VERSION, type DsAddToCartPayload, type DsCartResponsePayload } from '@cricut/ds-sfcc-contract';
 
 export type BridgeRuntimeMode = 'iframe' | 'custom-event';
+export type BootstrapStatus = 'received' | 'pending' | 'n/a';
 
 export interface BridgeTransport {
   readonly mode: BridgeRuntimeMode;
@@ -9,6 +10,7 @@ export interface BridgeTransport {
   readonly contractVersion: string;
   readonly parentOriginLabel: string;
   readonly isEmbedded: boolean;
+  readonly bootstrapStatus: Signal<BootstrapStatus>;
   initialize(hostElement: HTMLElement): void;
   addToCart(payload: DsAddToCartPayload): Promise<DsCartResponsePayload>;
   resolveProject(projectId: string): void;

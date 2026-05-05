@@ -1,4 +1,4 @@
-import { Injectable } from '@angular/core';
+import { Injectable, signal } from '@angular/core';
 import {
   CONTRACT_VERSION,
   type DsAddToCartPayload,
@@ -9,7 +9,7 @@ import {
   type SfccBootstrapConfig,
 } from '@cricut/ds-sfcc-contract';
 import { onDsPostMessage, postDsMessage } from '@cricut/ds-sfcc-contract/postmessage';
-import { type BridgeTransport, createMockCartResponse } from '../bridge-transport';
+import { type BootstrapStatus, type BridgeTransport, createMockCartResponse } from '../bridge-transport';
 
 @Injectable()
 export class PostMessageBridgeTransport implements BridgeTransport {
@@ -19,6 +19,7 @@ export class PostMessageBridgeTransport implements BridgeTransport {
 
   private readonly defaultTimeoutMs = 5000;
   private readonly parentOrigin = this.resolveParentOrigin();
+  readonly bootstrapStatus = signal<BootstrapStatus>(this.isEmbedded ? 'pending' : 'n/a');
   private bootstrapConfig: SfccBootstrapConfig | null = null;
   private bootstrapCleanup: (() => void) | null = null;
   private readyForBootstrapSent = false;
@@ -104,6 +105,7 @@ export class PostMessageBridgeTransport implements BridgeTransport {
       this.parentOrigin,
       (payload) => {
         this.bootstrapConfig = payload.config;
+        this.bootstrapStatus.set('received');
         console.info('[SfccBridge] Received SFCC bootstrap config', this.bootstrapConfig);
       },
     );

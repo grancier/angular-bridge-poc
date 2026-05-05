@@ -241,13 +241,15 @@ const BRIDGE_POC_TEMPLATE = `
     </div>
 
     <div class="poc-footer">
-      Runtime: {{ bridge.mode }}
-      &middot; Embedded: {{ bridge.isEmbedded ? 'Yes' : 'No (standalone mode)' }}
-      &middot; Transport: {{ bridge.modeLabel }}
+      Transport: {{ bridge.modeLabel }}
       &middot; Contract: {{ bridge.contractVersion }}
+      &middot; Isolation: {{ bridge.mode === 'iframe' ? 'cross-origin iframe' : (hasShadowRoot ? 'Shadow DOM' : 'same-document') }}
       &middot; Parent: {{ bridge.parentOriginLabel }}
+      @if (bridge.bootstrapStatus() !== 'n/a') {
+        &middot; Bootstrap: {{ bridge.bootstrapStatus() === 'received' ? 'received' : 'pending' }}
+      }
       &middot; Shadow DOM: {{ hasShadowRoot ? 'Active' : 'Inactive' }}
-      &middot; Zone.js: Removed
+      &middot; Change detection: zoneless (signals)
     </div>
   </div>
 `;
