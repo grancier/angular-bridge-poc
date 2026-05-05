@@ -221,7 +221,7 @@ const BRIDGE_POC_TEMPLATE = `
         <div class="status-bar"
              [class.info]="state() === 'success'"
              [class.error]="state() === 'error'"
-             [class.mock]="statusMessage()?.includes('Mock')">
+             [class.mock]="lastResponseSource() === 'mock'">
           {{ statusMessage() }}
         </div>
       }
@@ -256,6 +256,7 @@ export abstract class BridgePocComponentBase {
   readonly product: Product = PRODUCT;
   readonly state = signal<'idle' | 'loading' | 'success' | 'error'>('idle');
   readonly statusMessage = signal<string | null>(null);
+  readonly lastResponseSource = signal<'sfcc' | 'mock' | null>(null);
   readonly eventLog = signal<Array<{
     timestamp: number;
     time: string;
@@ -285,7 +286,15 @@ export abstract class BridgePocComponentBase {
   async onAddToCart(): Promise<void> {
     this.state.set('loading');
     this.statusMessage.set(null);
-    this.logEvent('ds:add-to-cart', `sku=${this.product.variantId} qty=${this.product.quantity}`);
+    this.lastResponseSource.set(null);
+
+    const embedded = this.bridge.isEmbedded;
+    const skuLabel = `sku=${this.product.variantId} qty=${this.product.quantity}`;
+    this.logEvent('ds:add-to-cart',
+      embedded
+        ? `→ parent (${skuLabel})`
+        : `[mock] standalone (${skuLabel})`
+    );
 
     try {
       const payload: DsAddToCartPayload = {
@@ -297,19 +306,26 @@ export abstract class BridgePocComponentBase {
       };
 
       const response = await this.bridge.addToCart(payload);
+      const source = embedded ? 'sfcc' : 'mock';
+      const sourceLabel = embedded ? 'SFCC' : 'Mock';
+      const logPrefix = embedded ? '← SFCC' : '← mock';
+      this.lastResponseSource.set(source);
 
       if (response.success) {
         this.state.set('success');
-        const msg = response.cartItemCount !== undefined
-          ? `Added! Cart: ${response.cartItemCount} item(s)`
-          : 'Added to cart';
+        const items = response.cartItemCount !== undefined
+          ? `${response.cartItemCount} item(s)`
+          : '';
+        const msg = items
+          ? `${sourceLabel}: Added to cart — ${items}`
+          : `${sourceLabel}: Added to cart`;
         this.statusMessage.set(msg);
-        this.logEvent('ds:cart-response', `success - ${msg}`);
+        this.logEvent('ds:cart-response', `${logPrefix} success${items ? ` — ${items}` : ''}`);
       } else {
         this.state.set('error');
         const message = response.errorMessage || response.errorCode || 'Add to cart failed';
-        this.statusMessage.set(message);
-        this.logEvent('ds:cart-response', `error - ${message}`);
+        this.statusMessage.set(`${sourceLabel}: ${message}`);
+        this.logEvent('ds:cart-response', `${logPrefix} error — ${message}`);
       }
 
       setTimeout(() => {
@@ -319,9 +335,10 @@ export abstract class BridgePocComponentBase {
       }, 3000);
     } catch (err: unknown) {
       this.state.set('error');
+      this.lastResponseSource.set(embedded ? 'sfcc' : 'mock');
       const message = err instanceof Error ? err.message : 'Unknown error';
       this.statusMessage.set(message);
-      this.logEvent('ds:cart-response', `error - ${message}`);
+      this.logEvent('ds:cart-response', `error — ${message}`);
     }
   }
 
