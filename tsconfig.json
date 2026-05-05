@@ -26,6 +26,6 @@
     "strictInputAccessModifiers": true,
     "strictTemplates": true
   },
-  "include": ["main.ts"],
+  "include": ["main.ts", "src/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

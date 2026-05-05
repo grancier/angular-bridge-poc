@@ -1,24 +1,30 @@
 {
   "name": "angular-bridge-poc",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
-  "description": "Angular Elements PoC — Shadow DOM + CustomEvent bridge to SFCC",
+  "description": "Angular iframe/custom-event PoC using ds-sfcc-contract transports",
   "scripts": {
-    "build": "ng build --configuration=production",
-    "build:cdn": "ng build --configuration=production && node scripts/prepare-cdn.mjs",
+    "build": "npm run build:iframe",
+    "build:iframe": "ng build --configuration=iframe",
+    "build:custom-event": "ng build --configuration=custom-event",
+    "build:cdn": "npm run build:iframe && npm run build:custom-event && node scripts/prepare-cdn.mjs",
     "serve": "ng serve",
     "config:render": "node scripts/render-config.mjs",
     "serve:test": "npm run config:render && npx serve .rendered",
+    "predeploy:s3": "npm run config:render && cp .rendered/index.html dist/acme-bridge-poc/browser/test.html",
     "deploy:s3": "set -a && . ./.env && set +a && aws s3 sync dist/acme-bridge-poc/browser/ s3://${CDN_BUCKET}/bridge-poc/${npm_package_version}/ --cache-control 'public,max-age=31536000,immutable'",
-    "invalidate:cf": "set -a && . ./.env && set +a && aws cloudfront create-invalidation --distribution-id ${CF_DISTRIBUTION_ID} --paths \"/bridge-poc/${npm_package_version}/*\""
+    "deploy:entry": "set -a && . ./.env && set +a && aws s3 cp dist/acme-bridge-poc/browser/test.html s3://${CDN_BUCKET}/bridge-poc/test.html --cache-control 'no-cache' --content-type 'text/html'",
+    "invalidate:cf": "set -a && . ./.env && set +a && aws cloudfront create-invalidation --distribution-id ${CF_DISTRIBUTION_ID} --paths \"/bridge-poc/${npm_package_version}/*\" \"/bridge-poc/test.html\"",
+    "deploy": "npm run deploy:s3 && npm run deploy:entry && npm run invalidate:cf"
   },
   "dependencies": {
-    "@angular/core": "^21.0.0",
     "@angular/common": "^21.0.0",
     "@angular/compiler": "^21.0.0",
+    "@angular/core": "^21.0.0",
     "@angular/elements": "^21.0.0",
     "@angular/platform-browser": "^21.0.0",
     "@angular/platform-browser-dynamic": "^21.0.0",
+    "@cricut/ds-sfcc-contract": "file:../ds-sfcc-contract",
     "rxjs": "^7.8.0",
     "tslib": "^2.6.0"
   },
