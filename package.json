@@ -2,7 +2,7 @@
   "name": "angular-bridge-poc",
   "version": "0.0.1",
   "private": true,
-  "description": "Angular Elements PoC — Shadow DOM + CustomEvent bridge to SFCC",
+  "description": "Angular Elements PoC — Shadow DOM + postMessage bridge to SFCC",
   "scripts": {
     "build": "ng build --configuration=production",
     "build:cdn": "ng build --configuration=production && node scripts/prepare-cdn.mjs",
@@ -13,12 +13,13 @@
     "invalidate:cf": "set -a && . ./.env && set +a && aws cloudfront create-invalidation --distribution-id ${CF_DISTRIBUTION_ID} --paths \"/bridge-poc/${npm_package_version}/*\""
   },
   "dependencies": {
-    "@angular/core": "^21.0.0",
     "@angular/common": "^21.0.0",
     "@angular/compiler": "^21.0.0",
+    "@angular/core": "^21.0.0",
     "@angular/elements": "^21.0.0",
     "@angular/platform-browser": "^21.0.0",
     "@angular/platform-browser-dynamic": "^21.0.0",
+    "@cricut/ds-sfcc-contract": "file:../ds-sfcc-contract",
     "rxjs": "^7.8.0",
     "tslib": "^2.6.0"
   },

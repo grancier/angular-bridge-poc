@@ -2,8 +2,8 @@
 // acme-bridge-poc — Single-file Angular Elements proof-of-concept
 // =============================================================================
 //
-// Proves: Shadow DOM encapsulation, zoneless change detection, CustomEvent
-// bridge to SFCC host, CDN-hosted bundles, HTML attribute configuration.
+// Proves: Shadow DOM encapsulation, zoneless change detection, typed postMessage
+// bridge to the SFCC host, CDN-hosted bundles, HTML attribute configuration.
 //
 // This file contains everything: the bridge service, the root component,
 // the Angular application bootstrap, and the custom element registration.
@@ -15,44 +15,23 @@
 // =============================================================================
 
 import { Component, Injectable, ElementRef, signal, computed, ChangeDetectionStrategy, ViewEncapsulation } from '@angular/core';
-import { bootstrapApplication, createApplication } from '@angular/platform-browser';
+import { createApplication } from '@angular/platform-browser';
 import { createCustomElement } from '@angular/elements';
-import { provideZonelessChangeDetection, ApplicationRef, Injector } from '@angular/core';
+import { provideZonelessChangeDetection } from '@angular/core';
+import {
+  CONTRACT_VERSION,
+  type DsAddToCartPayload,
+  type DsCartResponsePayload,
+  type DsProjectSavedPayload,
+  type DsResolveProjectPayload,
+  type DsResizePayload,
+  type SfccBootstrapConfig,
+} from '@cricut/ds-sfcc-contract';
+import { onDsPostMessage, postDsMessage } from '@cricut/ds-sfcc-contract/postmessage';
 
 // =============================================================================
-// 1. Bridge Types — mirrors @acme/app-bridge-types contract
+// 1. Product Data — demo payload for the cart contract
 // =============================================================================
-
-/** Outbound event: request to add a single product to cart */
-interface AddToCartRequest {
-  pid: string;
-  quantity: number;
-}
-
-/** Outbound event: request to resolve a full project into cart line items */
-interface ResolveProjectRequest {
-  projectId: string;
-}
-
-/** Outbound event: notify host of content height change */
-interface ResizeRequest {
-  height: number;
-}
-
-/** SFRA Cart-AddProduct response shape */
-interface CartResponse {
-  error?: boolean;
-  message?: string;
-  quantityTotal?: number;
-  cart?: {
-    numItems?: number;
-    totals?: {
-      grandTotal?: string;
-      subTotal?: string;
-      totalShippingCost?: string;
-    };
-  };
-}
 
 /** Product tile data — in production this comes from SFCC pdict */
 interface Product {
@@ -67,6 +46,8 @@ interface Product {
   category: string;
   variant: string;
   variantId: string;
+  projectId: string;
+  designAssetUrl: string;
 }
 
 const PRODUCT: Product = {
@@ -81,23 +62,17 @@ const PRODUCT: Product = {
   category: 'machines_cricut-maker-machines',
   variant: 'Machine Only',
   variantId: '2011084',
+  projectId: 'bridge-poc-project',
+  designAssetUrl: 'https://cricut.com/dw/image/v2/BHBM_PRD/on/demandware.static/-/Sites-cricut-master-catalog/default/dwc0a445f4/Maker4/Maker4_Updates/1_Hero_2011084_Maker4_Seashell.jpg?sw=600&q=65',
 };
-
-/** All bridge event names with ds: prefix */
-type BridgeEvent =
-  | 'ds:add-to-cart'
-  | 'ds:resolve-project'
-  | 'ds:resize'
-  | 'ds:project-saved'
-  | 'ds:cart-response';
 
 // =============================================================================
 // 2. SfccBridgeService — the only commerce communication channel
 // =============================================================================
 //
-// When embedded inside SFCC, dispatches CustomEvents on the host element.
-// When running standalone (ng serve), detects the missing host and returns
-// mock responses so development works without SFCC.
+// When embedded inside the SFCC iframe host, posts typed ds:* envelopes to the
+// parent window and validates responses against the parent origin. When running
+// standalone (ng serve), returns mock responses so development works without SFCC.
 // =============================================================================
 
 @Injectable({ providedIn: 'root' })
@@ -105,110 +80,168 @@ export class SfccBridgeService {
 
   private hostElement: HTMLElement | null = null;
   private readonly DEFAULT_TIMEOUT_MS = 5000;
-  private readonly RESOLVE_TIMEOUT_MS = 15000;
+  private readonly parentOrigin = this.resolveParentOrigin();
+  private bootstrapConfig: SfccBootstrapConfig | null = null;
+  private bootstrapCleanup: (() => void) | null = null;
+  private readyForBootstrapSent = false;
 
   /**
-   * Detect whether we're running inside the SFCC host page.
-   * The host attaches a bridge listener to the custom element and sets
-   * a data attribute to signal readiness. If absent, we're standalone.
+   * Detect whether we're running inside the SFCC iframe host page.
+   * SFCC appends parentOrigin=https://host to the iframe URL. Without that
+   * explicit origin, the app stays in standalone mock mode.
    */
   get isEmbedded(): boolean {
-    return this.hostElement?.closest('[data-sfcc-bridge]') !== null;
+    return window.parent !== window && this.parentOrigin !== null;
   }
 
-  /** Called once during bootstrap to bind to the host element */
+  get contractVersion(): string {
+    return CONTRACT_VERSION;
+  }
+
+  get parentOriginLabel(): string {
+    return this.parentOrigin ?? 'standalone';
+  }
+
+  /** Called once during bootstrap to bind to the host element and handshake. */
   setHostElement(el: HTMLElement): void {
     this.hostElement = el;
+    this.startBootstrapHandshake();
   }
 
   /**
-   * Add a single product to the SFRA cart.
+   * Add a single product/design to the SFRA cart.
    *
-   * Dispatches ds:add-to-cart on the host element and awaits ds:cart-response.
-   * The ISML host owns the fetch, CSRF, cookies, and jQuery minicart sync;
-   * Angular stays commerce-agnostic.
+   * Posts ds:add-to-cart to the SFCC parent and awaits ds:cart-response.
+   * The parent page owns the SFCC bridge, cookies, and minicart sync;
+   * Angular stays commerce-agnostic and consumes the shared contract package.
    */
-  addToCart(pid: string, quantity: number): Promise<CartResponse> {
-    const detail: AddToCartRequest = { pid, quantity };
-    return this.dispatchAndAwaitResponse('ds:add-to-cart', detail, this.DEFAULT_TIMEOUT_MS);
+  addToCart(payload: DsAddToCartPayload): Promise<DsCartResponsePayload> {
+    return this.postAndAwaitCartResponse(payload, this.DEFAULT_TIMEOUT_MS);
   }
 
   /**
-   * Resolve a full project into SFCC cart line items.
-   * Longer timeout because the controller may call API-1 on cache miss.
+   * Ask the SFCC parent to resolve a project. The PoC does not await a response,
+   * but the outbound message shape is enforced by ds-sfcc-contract.
    */
-  resolveProject(projectId: string): Promise<CartResponse> {
-    const detail: ResolveProjectRequest = { projectId };
-    return this.dispatchAndAwaitResponse('ds:resolve-project', detail, this.RESOLVE_TIMEOUT_MS);
+  resolveProject(projectId: string): void {
+    const payload: DsResolveProjectPayload = { projectId };
+    const parentOrigin = this.getActiveParentOrigin();
+    if (!parentOrigin) return;
+    postDsMessage(window.parent, 'ds:resolve-project', payload, parentOrigin);
   }
 
   /** Notify host of content height change for container sizing */
   resize(height: number): void {
-    this.dispatch('ds:resize', { height } as ResizeRequest);
+    const payload: DsResizePayload = { height };
+    const parentOrigin = this.getActiveParentOrigin();
+    if (!parentOrigin) return;
+    postDsMessage(window.parent, 'ds:resize', payload, parentOrigin);
   }
 
   /** Signal project save so host can bust manifest cache */
   projectSaved(projectId: string): void {
-    this.dispatch('ds:project-saved', { projectId });
+    const payload: DsProjectSavedPayload = {
+      projectId,
+      savedAt: new Date().toISOString(),
+    };
+    const parentOrigin = this.getActiveParentOrigin();
+    if (!parentOrigin) return;
+    postDsMessage(window.parent, 'ds:project-saved', payload, parentOrigin);
   }
 
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
 
-  private dispatch(eventName: BridgeEvent, detail: unknown): void {
-    if (!this.hostElement) return;
+  private startBootstrapHandshake(): void {
+    if (!this.isEmbedded || !this.parentOrigin || this.readyForBootstrapSent) return;
 
-    // composed: true lets the event escape the shadow root.
-    // bubbles: true lets it propagate up the DOM.
-    this.hostElement.dispatchEvent(
-      new CustomEvent(eventName, {
-        detail,
-        bubbles: true,
-        composed: true,
-      })
+    this.readyForBootstrapSent = true;
+    this.bootstrapCleanup = onDsPostMessage(
+      window,
+      'ds:bootstrap',
+      this.parentOrigin,
+      (payload) => {
+        this.bootstrapConfig = payload.config;
+        console.info('[SfccBridge] Received SFCC bootstrap config', this.bootstrapConfig);
+      },
+    );
+
+    postDsMessage(
+      window.parent,
+      'ds:ready-for-bootstrap',
+      { contractVersion: CONTRACT_VERSION },
+      this.parentOrigin,
     );
   }
 
-  private dispatchAndAwaitResponse(
-    eventName: BridgeEvent,
-    detail: unknown,
+  private postAndAwaitCartResponse(
+    payload: DsAddToCartPayload,
     timeoutMs: number
-  ): Promise<CartResponse> {
+  ): Promise<DsCartResponsePayload> {
 
-    // Standalone mode: return a mock SFRA-shaped response for local development
+    // Standalone mode: return a mock contract-shaped response for local development
     if (!this.isEmbedded) {
-      console.warn(`[SfccBridge] Not embedded — mocking SFRA response for ${eventName}`);
+      console.warn('[SfccBridge] Not embedded — mocking ds:cart-response');
       return Promise.resolve({
-        error: false,
-        message: 'Mock response (standalone mode)',
-        quantityTotal: 1,
-        cart: { numItems: 1, totals: { grandTotal: '$399.00' } },
+        success: true,
+        basketId: 'mock-basket',
+        cartItemCount: payload.qty,
       });
     }
 
-    return new Promise<CartResponse>((resolve, reject) => {
+    const parentOrigin = this.getActiveParentOrigin();
+    if (!parentOrigin) {
+      return Promise.reject(new Error('Missing parentOrigin; refusing to post ds:add-to-cart'));
+    }
+
+    return new Promise<DsCartResponsePayload>((resolve, reject) => {
+      let stopListening: (() => void) | null = null;
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error(`Bridge timeout: no ds:cart-response within ${timeoutMs}ms`));
+        reject(new Error(`Bridge timeout: no ds:cart-response postMessage within ${timeoutMs}ms`));
       }, timeoutMs);
-
-      const handler = (e: Event) => {
-        cleanup();
-        resolve((e as CustomEvent<CartResponse>).detail);
-      };
 
       const cleanup = () => {
         clearTimeout(timer);
-        this.hostElement?.removeEventListener('ds:cart-response', handler);
+        if (stopListening) {
+          stopListening();
+          stopListening = null;
+        }
       };
 
-      // Listen on the host element for the correlated response
-      this.hostElement?.addEventListener('ds:cart-response', handler, { once: true });
+      stopListening = onDsPostMessage(window, 'ds:cart-response', parentOrigin, (response) => {
+        cleanup();
+        resolve(response);
+      });
 
-      // Fire the outbound event
-      this.dispatch(eventName, detail);
+      postDsMessage(window.parent, 'ds:add-to-cart', payload, parentOrigin);
     });
+  }
+
+  private getActiveParentOrigin(): string | null {
+    if (!this.isEmbedded || !this.parentOrigin) return null;
+    return this.parentOrigin;
+  }
+
+  private resolveParentOrigin(): string | null {
+    const queryValue = new URLSearchParams(window.location.search).get('parentOrigin');
+    const queryOrigin = this.normalizeOrigin(queryValue);
+    if (queryOrigin) return queryOrigin;
+
+    return this.normalizeOrigin(document.referrer);
+  }
+
+  private normalizeOrigin(value: string | null): string | null {
+    if (!value) return null;
+
+    try {
+      const url = new URL(value);
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+      return url.origin;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -218,6 +251,7 @@ export class SfccBridgeService {
 //
 // ViewEncapsulation.ShadowDom: the browser attaches a shadow root to this
 // component's host element. All styles are scoped. No CSS leaks in or out.
+// Cross-frame commerce events use window.postMessage, not DOM CustomEvents.
 //
 // ChangeDetectionStrategy.OnPush + zoneless: no Zone.js, no dirty checking
 // of the SFRA host page. Change detection runs on signal updates only.
@@ -441,7 +475,7 @@ export class SfccBridgeService {
   template: `
     <div class="poc-card">
       <div class="poc-header">
-        <h2>Bridge PoC — Shadow DOM + CustomEvent</h2>
+        <h2>Bridge PoC — postMessage + ds-sfcc-contract</h2>
       </div>
 
       <div class="poc-body">
@@ -497,7 +531,10 @@ export class SfccBridgeService {
       </div>
 
       <div class="poc-footer">
-        Embedded: {{ bridge.isEmbedded ? 'Yes (SFCC host detected)' : 'No (standalone mode)' }}
+        Embedded: {{ bridge.isEmbedded ? 'Yes (SFCC iframe host)' : 'No (standalone mode)' }}
+        &middot; Transport: {{ bridge.isEmbedded ? 'postMessage' : 'mock' }}
+        &middot; Contract: {{ bridge.contractVersion }}
+        &middot; Parent: {{ bridge.parentOriginLabel }}
         &middot; Shadow DOM: {{ hasShadowRoot ? 'Active' : 'Inactive' }}
         &middot; Zone.js: Removed
       </div>
@@ -541,27 +578,31 @@ export class BridgePocComponent {
   async onAddToCart(): Promise<void> {
     this.state.set('loading');
     this.statusMessage.set(null);
-    this.logEvent('sfra:add-product', `pid=${this.product.variantId} qty=${this.product.quantity}`);
+    this.logEvent('ds:add-to-cart', `sku=${this.product.variantId} qty=${this.product.quantity}`);
 
     try {
-      const response = await this.bridge.addToCart(
-        this.product.variantId,
-        this.product.quantity,
-      );
+      const payload: DsAddToCartPayload = {
+        sku: this.product.variantId,
+        qty: this.product.quantity,
+        projectId: this.product.projectId,
+        designAssetUrl: this.product.designAssetUrl,
+        previewUrl: this.product.image,
+      };
 
-      if (!response.error) {
+      const response = await this.bridge.addToCart(payload);
+
+      if (response.success) {
         this.state.set('success');
-        const total = response.cart?.totals?.grandTotal;
-        const items = response.quantityTotal ?? response.cart?.numItems;
-        const msg = total
-          ? `Added! Cart: ${items ?? '?'} item(s), ${total}`
-          : response.message || 'Added to cart';
+        const msg = response.cartItemCount !== undefined
+          ? `Added! Cart: ${response.cartItemCount} item(s)`
+          : 'Added to cart';
         this.statusMessage.set(msg);
-        this.logEvent('sfra:cart-response', `success — ${msg}`);
+        this.logEvent('ds:cart-response', `success — ${msg}`);
       } else {
         this.state.set('error');
-        this.statusMessage.set(response.message || 'Add to cart failed');
-        this.logEvent('sfra:cart-response', `error — ${response.message}`);
+        const message = response.errorMessage || response.errorCode || 'Add to cart failed';
+        this.statusMessage.set(message);
+        this.logEvent('ds:cart-response', `error — ${message}`);
       }
 
       // Reset button state after 3 seconds
@@ -575,7 +616,7 @@ export class BridgePocComponent {
       this.state.set('error');
       const message = err instanceof Error ? err.message : 'Unknown error';
       this.statusMessage.set(message);
-      this.logEvent('sfra:cart-response', `error — ${message}`);
+      this.logEvent('ds:cart-response', `error — ${message}`);
     }
   }
 
@@ -596,7 +637,7 @@ export class BridgePocComponent {
 // No platformBrowserDynamic().bootstrapModule(). Angular Elements registers
 // a custom element with the browser, and the browser upgrades <acme-bridge-poc>
 // when it appears in the DOM. Shadow DOM is declared via ViewEncapsulation.ShadowDom
-// on the component — the browser attaches the shadow root automatically on upgrade.
+// on the component; the iframe bridge uses postMessage for cross-origin events.
 // =============================================================================
 
 (async () => {

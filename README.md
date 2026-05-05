@@ -1,4 +1,4 @@
-# Bridge PoC — Angular Elements + Shadow DOM + CustomEvent
+# Bridge PoC — Angular Elements + Shadow DOM + postMessage
 
 Minimal proof-of-concept that validates the Angular Elements architecture for embedding Angular inside SFCC's SFRA storefront. One button, one product, full event lifecycle — no App dependencies.
 
@@ -6,10 +6,10 @@ Minimal proof-of-concept that validates the Angular Elements architecture for em
 
 1. **Shadow DOM isolation** — Angular styles don't leak into SFRA; SFRA styles don't leak into Angular.
 2. **Zoneless Angular** — No Zone.js. SFRA's jQuery event loop is unaffected.
-3. **Shadow-root fetch to SFRA** — the component calls `Cart-AddProduct` directly from inside the shadow root with `credentials: 'include'`, so the SFCC session cookie attaches automatically. No host-page script required for add-to-cart.
-4. **CustomEvent bridge (available for host-driven flows)** — `SfccBridgeService` still exposes `resize`, `projectSaved`, and `resolveProject` helpers that dispatch `composed: true` events. Not exercised by the current PoC button but wired up for the real App integration.
+3. **Typed iframe transport** — add-to-cart uses `window.postMessage` with strict parent-origin validation instead of DOM `CustomEvent` dispatch.
+4. **Shared contract consumption** — event names, payloads, contract version, and postMessage helpers come from `@cricut/ds-sfcc-contract`.
 5. **CDN-hosted bundles** — Angular loads from an external CDN, not cartridge static assets. Zero build coupling.
-6. **Independent deployment** — Angular deploys to S3/CloudFront. SFCC deploys its cartridge. The only sync point is a version string in Site Preferences.
+6. **Independent deployment** — Angular deploys to S3/CloudFront. SFCC deploys its cartridge. The sync points are the CDN version and the shared contract version.
 
 ## Project Structure
 
@@ -22,6 +22,7 @@ angular-bridge-poc/
 ├── angular.json                # CLI config: ESM output, hashed filenames, no index.html
 ├── tsconfig.json               # TS config: ES2022, strict, bundler resolution
 ├── package.json                # Dependencies + build/deploy/render scripts
+├── package-lock.json           # Locks Angular + @cricut/ds-sfcc-contract
 │
 ├── env-example                 # Template env file — copy to .env and fill in
 │
@@ -96,7 +97,7 @@ Two ways to run the app locally:
 npm run serve
 ```
 
-Open `http://localhost:4200`. The `SfccBridgeService` detects no `cart-endpoint` attribute and returns mock cart responses. Useful for UI iteration without SFRA running.
+Because the Angular build is configured with `index: false`, the dev server exposes the module bundle but does not serve a root HTML page. Load it from any small host page that contains `<acme-bridge-poc>` and imports `http://localhost:4200/main.js`. The `SfccBridgeService` detects that no validated `parentOrigin` is available and returns mock contract-shaped cart responses. Useful for UI iteration without SFRA running.
 
 **2. `npm run serve:test` — load the deployed CDN bundle**
 
@@ -106,7 +107,7 @@ npm run deploy:s3        # (optional) push to S3 if you haven't already
 npm run serve:test       # renders templates + serves .rendered/ at :3000
 ```
 
-Open `http://localhost:3000/index.html`. This serves the rendered `index.html` (with concrete `CF_DOMAIN` and `BUNDLE_MAIN` substituted), loading the Angular bundle cross-origin from your CloudFront distribution — the closest local approximation of the SFRA embedding.
+Open `http://localhost:3000/index.html`. This serves the rendered `index.html` (with concrete `CF_DOMAIN` and `BUNDLE_MAIN` substituted), loading the Angular bundle cross-origin from your CloudFront distribution. Without an SFCC iframe parent and `parentOrigin` query parameter, cart actions intentionally stay in mock mode.
 
 To verify Shadow DOM isolation, inspect the element in DevTools: you should see `#shadow-root (open)` under `<acme-bridge-poc>`. Styles defined inside the component are not visible in the parent document's stylesheet list.
 
@@ -201,15 +202,16 @@ The ISML template reads these to construct the CDN URLs. To deploy a new Angular
 3. Navigate to `https://[sandbox-hostname]/en-us/bridgepoc`
 4. Verify:
    - The component renders inside a shadow root (DevTools → Elements → `#shadow-root (open)`)
-   - Clicking "Add to Cart" issues a `POST` to `Cart-AddProduct` from inside the shadow root (DevTools → Network)
-   - The request carries the `dwsid` session cookie automatically (no explicit credential handling)
-   - The component shows the SFRA cart response (quantity, grand total)
+   - The iframe URL includes `parentOrigin=https%3A%2F%2F<sfcc-host>`
+   - Clicking "Add to Cart" posts a typed `ds:add-to-cart` message to the parent window
+   - The SFCC parent relay forwards that message to `<cricut-designspace-bridge>`
+   - The component receives a typed `ds:cart-response` message from the parent window
    - SFRA styles (header, footer, nav) are unaffected by Angular's styles
    - Angular's styles are unaffected by SFRA's stylesheets
 
-### CSRF note
+### postMessage contract note
 
-The bridge script looks for a CSRF token via `input[name="csrf_token"]` or `meta[name="csrf-token"]`. SFRA's CSRF implementation varies by cartridge setup. If `Cart-AddProduct` returns a 403, check that the CSRF token is accessible on the shell page and adjust the selector in the ISML bridge script accordingly.
+The iframe app never posts with `'*'`. It reads the `parentOrigin` query parameter appended by SFCC and uses `@cricut/ds-sfcc-contract/postmessage` for typed send/listen helpers. The SFCC parent owns the actual SFRA cart request, cookies, CSRF handling if needed, and minicart synchronization.
 
 ## Validating the Architecture
 
@@ -220,9 +222,9 @@ This PoC proves or disproves the following claims from the architecture document
 | Shadow DOM isolates CSS | Add a conflicting `.poc-card { background: red }` to SFRA's global CSS. Angular's card should remain white. |
 | Shadow DOM isolates DOM | Run `document.querySelector('.poc-card')` in the console — it should return `null` (element is behind shadow root). |
 | Zoneless Angular doesn't break jQuery | Open any PDP on the same site, add to cart, confirm minicart still works. Zone.js is not loaded globally. |
-| Shadow-root fetch reaches SFRA with session cookie | In the Network tab, confirm the `Cart-AddProduct` POST is initiated by the Angular bundle and carries `dwsid` (and `dwsecuretoken_*`) automatically — no explicit credential handling in the component. |
+| postMessage reaches the SFCC parent relay | In DevTools, confirm the iframe posts `ds:add-to-cart` to the exact `parentOrigin` and receives `ds:cart-response` from the same origin. |
 | CDN bundles cache independently per version | Bump `version` in `package.json`, redeploy, update the `bridgePocVersion` Site Preference. Old pages keep serving the prior version from the edge until its cache expires or is invalidated. |
-| CustomEvent bridge helpers exist for host-driven flows | Inspect [main.ts](main.ts) — `SfccBridgeService.resize`, `projectSaved`, and `resolveProject` dispatch `composed: true` CustomEvents on the host element. Not wired to any UI in this PoC; wired for the full App integration. |
+| Contract helpers type the runtime bridge | Inspect [main.ts](main.ts) — `SfccBridgeService` imports payloads and `postDsMessage` / `onDsPostMessage` from `@cricut/ds-sfcc-contract`. |
 
 ## Graduating to Production
 
@@ -236,4 +238,4 @@ When the PoC validates, the path to the full App integration is:
 6. Add Auth0 config attributes to the custom element
 7. Swap hardcoded demo product for real material resolution flow
 
-The shadow-root fetch pattern, CustomEvent bridge helpers, CDN loading, and SFCC session cookie flow carry forward unchanged.
+The Shadow DOM isolation, contract-backed postMessage helpers, CDN loading, and SFCC-owned cart bridge carry forward unchanged.
