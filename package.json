@@ -1,6 +1,6 @@
 {
   "name": "angular-bridge-poc",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "Angular iframe/custom-event PoC using ds-sfcc-contract transports",
   "scripts": {
